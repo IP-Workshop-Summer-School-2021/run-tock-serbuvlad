@@ -21,6 +21,8 @@ use kernel::{create_capability, debug, debug_gpio, debug_verbose, static_init};
 use nrf52833::gpio::Pin;
 use nrf52833::interrupt_service::Nrf52833DefaultPeripherals;
 
+use drivers;
+
 // Kernel LED (same as microphone LED)
 const LED_KERNEL_PIN: Pin = Pin::P0_20;
 const LED_MICROPHONE_PIN: Pin = Pin::P0_20;
@@ -112,6 +114,20 @@ pub struct MicroBit {
 
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
+
+    // private drivers
+    hello: &'static drivers::hello::Hello,
+
+    dots_display: &'static drivers::dots_display::DotsDisplay<
+        'static,
+        capsules::led_matrix::LedMatrixLed<
+            'static,
+            nrf52::gpio::GPIOPin<'static>,
+            capsules::virtual_alarm::VirtualMuxAlarm<'static, nrf52833::rtc::Rtc<'static>>,
+        >,
+    >,
+
+    pipe_manager: &'static drivers::pipe::PipeManager,
 }
 
 impl SyscallDriverLookup for MicroBit {
@@ -135,6 +151,11 @@ impl SyscallDriverLookup for MicroBit {
             capsules::app_flash_driver::DRIVER_NUM => f(Some(self.app_flash)),
             capsules::sound_pressure::DRIVER_NUM => f(Some(self.sound_pressure)),
             kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
+
+            drivers::hello::DRIVER_NUM => f(Some(self.hello)),
+            drivers::dots_display::DRIVER_NUM => f(Some(self.dots_display)),
+            drivers::pipe::DRIVER_NUM => f(Some(self.pipe_manager)),
+
             _ => f(None),
         }
     }
@@ -556,6 +577,37 @@ pub unsafe fn main() {
         nrf52::rtc::Rtc<'static>
     ));
 
+    let leds = components::led_matrix_leds!(
+        nrf52::gpio::GPIOPin<'static>,
+        capsules::virtual_alarm::VirtualMuxAlarm<'static, nrf52::rtc::Rtc<'static>>,
+        led,
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (3, 0),
+        (4, 0),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (0, 2),
+        (1, 2),
+        (2, 2),
+        (3, 2),
+        (4, 2),
+        (0, 3),
+        (1, 3),
+        (2, 3),
+        (3, 3),
+        (4, 3),
+        (0, 4),
+        (1, 4),
+        (2, 4),
+        (3, 4),
+        (4, 4)
+    );
+
     //--------------------------------------------------------------------------
     // Process Console
     //--------------------------------------------------------------------------
@@ -578,6 +630,23 @@ pub unsafe fn main() {
 
     let scheduler = components::sched::round_robin::RoundRobinComponent::new(&PROCESSES)
         .finalize(components::rr_component_helper!(NUM_PROCS));
+
+    // private drivers
+    let hello = static_init!(drivers::hello::Hello, drivers::hello::Hello::new());
+
+    let dots_display = static_init!(
+        drivers::dots_display::DotsDisplay<
+            'static,
+            capsules::led_matrix::LedMatrixLed<
+                'static,
+                nrf52::gpio::GPIOPin<'static>,
+                capsules::virtual_alarm::VirtualMuxAlarm<'static, nrf52833::rtc::Rtc<'static>>,
+            >,
+        >,
+        drivers::dots_display::DotsDisplay::new(leds)
+    );
+
+    let pipe_manager = static_init!(drivers::pipe::PipeManager, drivers::pipe::PipeManager::new());
 
     let microbit = MicroBit {
         ble_radio,
@@ -602,6 +671,12 @@ pub unsafe fn main() {
 
         scheduler,
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
+
+        hello,
+
+        dots_display,
+
+        pipe_manager,
     };
 
     let chip = static_init!(
@@ -610,7 +685,7 @@ pub unsafe fn main() {
     );
     CHIP = Some(chip);
 
-    debug!("Initialization complete. Entering main loop.");
+    debug!("Initialization complete.");
 
     //--------------------------------------------------------------------------
     // PROCESSES AND MAIN LOOP
